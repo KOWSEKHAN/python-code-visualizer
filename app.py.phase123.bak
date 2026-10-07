@@ -1,0 +1,470 @@
+import streamlit as st
+from streamlit_ace import st_ace
+
+from core.executor import Executor
+from core.tracer import PythonTracer
+from core.execution_controller import ExecutionController
+
+
+# ============================================================
+# PAGE CONFIG & CUSTOM STYLING
+# ============================================================
+
+st.set_page_config(
+    page_title="Python Code Visualizer",
+    page_icon="🐍",
+    layout="wide"
+)
+
+st.markdown("""
+<style>
+    .metric-card {
+        background-color: #1e1e2e;
+        border-radius: 8px;
+        padding: 12px;
+        border: 1px solid #313244;
+        margin-bottom: 8px;
+    }
+    .stack-frame-box {
+        background-color: #181825;
+        border-radius: 6px;
+        padding: 12px;
+        border-left: 4px solid #89b4fa;
+        margin-bottom: 10px;
+    }
+    .heap-object-box {
+        background-color: #181825;
+        border-radius: 6px;
+        padding: 12px;
+        border-left: 4px solid #a6e3a1;
+        margin-bottom: 10px;
+    }
+    .obj-ref-badge {
+        background-color: #313244;
+        color: #f9e2af;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: monospace;
+        font-weight: bold;
+    }
+    .code-line-highlight {
+        background-color: #313244;
+        color: #cdd6f4;
+        padding: 8px 12px;
+        border-radius: 4px;
+        font-family: monospace;
+        border-left: 3px solid #f38ba8;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ============================================================
+# SESSION STATE INITIALIZATION
+# ============================================================
+
+if "code" not in st.session_state:
+    st.session_state.code = ""
+
+if "executor" not in st.session_state:
+    st.session_state.executor = None
+
+if "tracer" not in st.session_state:
+    st.session_state.tracer = None
+
+if "controller" not in st.session_state:
+    st.session_state.controller = None
+
+if "steps" not in st.session_state:
+    st.session_state.steps = []
+
+if "current_step" not in st.session_state:
+    st.session_state.current_step = None
+
+if "output" not in st.session_state:
+    st.session_state.output = ""
+
+if "last_error" not in st.session_state:
+    st.session_state.last_error = None
+
+
+# ============================================================
+# TITLE & DESCRIPTION
+# ============================================================
+
+st.title("🐍 Python Code Visualizer")
+st.write(
+    "Type or paste any Python code into the editor below, then click **▶ Run** to step through "
+    "execution, call stacks, variables, and heap objects."
+)
+
+
+# ============================================================
+# CURRENT STEP & LINE CALCULATION
+# ============================================================
+
+current_step = st.session_state.current_step
+
+current_line_zero_indexed = None
+if current_step is not None and current_step.line_number is not None:
+    if current_step.line_number > 0:
+        current_line_zero_indexed = current_step.line_number - 1
+
+
+# ============================================================
+# CODE EDITOR (STREAMLIT-ACE)
+# ============================================================
+
+st.subheader("Python Code")
+
+# Active line marker inside Ace Editor
+markers = []
+if current_line_zero_indexed is not None:
+    code_lines = st.session_state.code.splitlines()
+    if 0 <= current_line_zero_indexed < len(code_lines):
+        line_len = len(code_lines[current_line_zero_indexed])
+        markers.append({
+            "startRow": current_line_zero_indexed,
+            "startCol": 0,
+            "endRow": current_line_zero_indexed,
+            "endCol": max(line_len, 1),
+            "className": "ace_active-line",
+            "type": "fullLine"
+        })
+
+code_from_editor = st_ace(
+    value=st.session_state.code,
+    language="python",
+    theme="monokai",
+    key="python_code_editor",
+    height=360,
+    tab_size=4,
+    show_gutter=True,
+    show_print_margin=False,
+    wrap=False,
+    auto_update=False,
+    markers=markers,
+    placeholder="Type or paste your Python code here..."
+)
+
+if code_from_editor is not None:
+    st.session_state.code = code_from_editor
+
+
+# ============================================================
+# CONTROL BUTTONS
+# ============================================================
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    btn_prev = st.button("⏮ Previous", use_container_width=True)
+
+with col2:
+    btn_run = st.button("▶ Run", use_container_width=True)
+
+with col3:
+    btn_next = st.button("⏭ Next", use_container_width=True)
+
+with col4:
+    btn_reset = st.button("🔄 Reset", use_container_width=True)
+
+
+# ============================================================
+# RUN ACTION (Execute & Trace User Code)
+# ============================================================
+
+if btn_run:
+    user_code = st.session_state.code
+    st.session_state.last_error = None
+    st.session_state.output = ""
+
+    if not user_code or not user_code.strip():
+        st.session_state.executor = None
+        st.session_state.tracer = None
+        st.session_state.controller = None
+        st.session_state.steps = []
+        st.session_state.current_step = None
+        st.session_state.output = ""
+        st.warning("Enter Python code to run.")
+    else:
+        try:
+            executor = Executor()
+            tracer = PythonTracer(executor)
+
+            tracer.run(user_code)
+
+            controller = ExecutionController(executor.steps)
+
+            st.session_state.executor = executor
+            st.session_state.tracer = tracer
+            st.session_state.controller = controller
+            st.session_state.steps = executor.steps
+            st.session_state.current_step = None
+            st.session_state.output = tracer.output
+
+            st.success(
+                f"Traced successfully: {len(executor.steps)} execution steps generated. "
+                f"Click ⏭ Next to begin stepping through."
+            )
+        except Exception as error:
+            error_msg = f"{type(error).__name__}: {error}"
+            st.session_state.last_error = error_msg
+            if executor.steps:
+                controller = ExecutionController(executor.steps)
+                st.session_state.executor = executor
+                st.session_state.tracer = tracer
+                st.session_state.controller = controller
+                st.session_state.steps = executor.steps
+                st.session_state.current_step = None
+                st.session_state.output = getattr(tracer, "output", "")
+                st.warning(
+                    f"Execution halted due to {error_msg}. "
+                    f"{len(executor.steps)} step(s) were recorded before the error. "
+                    f"Click ⏭ Next to inspect state leading up to the error."
+                )
+            else:
+                st.session_state.executor = None
+                st.session_state.tracer = None
+                st.session_state.controller = None
+                st.session_state.steps = []
+                st.session_state.current_step = None
+                st.session_state.output = ""
+                st.error(f"Execution Error: {error_msg}")
+
+
+# ============================================================
+# NAVIGATION CONTROLS (Next, Previous, Reset)
+# ============================================================
+
+controller = st.session_state.controller
+
+if btn_next:
+    if controller is not None:
+        st.session_state.current_step = controller.next()
+    else:
+        st.warning("Click ▶ Run first to trace the program.")
+
+if btn_prev:
+    if controller is not None:
+        st.session_state.current_step = controller.previous()
+    else:
+        st.warning("Click ▶ Run first to trace the program.")
+
+if btn_reset:
+    if controller is not None:
+        controller.reset()
+    st.session_state.current_step = None
+
+
+# Refresh current step after button interaction
+current_step = st.session_state.current_step
+total_steps = len(st.session_state.steps) if st.session_state.steps else 0
+
+
+# ============================================================
+# ERROR BANNER (If any)
+# ============================================================
+
+if st.session_state.last_error:
+    st.error(f"⚠️ Runtime Note: {st.session_state.last_error}")
+
+
+# ============================================================
+# HELPER FOR UI OBJECT REFERENCE RENDERING
+# ============================================================
+
+def render_ref_badge(var_value, heap_snapshot):
+    if isinstance(var_value, str) and var_value.startswith("Object #"):
+        obj_key = "object_" + var_value.removeprefix("Object #")
+        if heap_snapshot and obj_key in heap_snapshot:
+            obj_data = heap_snapshot[obj_key]
+            if "value" in obj_data:
+                val_repr = repr(obj_data["value"]) if isinstance(obj_data["value"], str) else obj_data["value"]
+                return f"<span class='obj-ref-badge'>🏷️ {var_value} ({val_repr})</span>"
+        return f"<span class='obj-ref-badge'>🏷️ {var_value}</span>"
+    return f"`{repr(var_value) if isinstance(var_value, str) else var_value}`"
+
+
+st.divider()
+
+# ============================================================
+# SECTION 1: EXECUTION DETAILS — FULL WIDTH
+# ============================================================
+
+with st.container(border=True):
+    st.subheader("⚙️ Execution Details")
+
+    if current_step is None:
+        if total_steps > 0:
+            st.info("Execution ready. Click **⏭ Next** to advance to Step 1.")
+        else:
+            st.info("Enter your code above and click **▶ Run**, then click **⏭ Next** to step through.")
+    else:
+        info_c1, info_c2, info_c3, info_c4 = st.columns(4)
+
+        with info_c1:
+            st.metric(
+                label="Step",
+                value=f"{current_step.step_number} / {total_steps}"
+            )
+
+        with info_c2:
+            st.metric(
+                label="Event",
+                value=current_step.event_type.upper()
+            )
+
+        with info_c3:
+            display_frame = "<module> (Global Frame)" if current_step.frame_name == "<module>" else current_step.frame_name
+            st.metric(
+                label="Frame",
+                value=display_frame
+            )
+
+        with info_c4:
+            st.metric(
+                label="Line",
+                value=current_step.line_number if current_step.line_number is not None else "-"
+            )
+
+        code_display = current_step.code if current_step.code else "(no source line)"
+        st.markdown(f"**Executing Line {current_step.line_number}:**")
+        st.code(code_display, language="python")
+
+
+st.divider()
+
+# ============================================================
+# SECTION 2: CURRENT VARIABLES — FULL WIDTH
+# ============================================================
+
+with st.container(border=True):
+    st.subheader("🔢 CURRENT VARIABLES")
+
+    if current_step is None:
+        st.caption("Variables for the currently active frame will appear here.")
+    else:
+        active_vars = current_step.variables
+
+        if active_vars:
+            display_frame = "<module> (Global Frame)" if current_step.frame_name == "<module>" else current_step.frame_name
+            st.markdown(f"**Active Frame:** `{display_frame}`")
+            var_strings = []
+            for var_name, var_value in active_vars.items():
+                if isinstance(var_value, str) and var_value.startswith("Object #"):
+                    ref_html = render_ref_badge(var_value, current_step.objects_snapshot)
+                    var_strings.append(f"`{var_name}` → {ref_html}")
+                else:
+                    val_repr = repr(var_value) if isinstance(var_value, str) else var_value
+                    var_strings.append(f"`{var_name}` → `{val_repr}`")
+            st.markdown("&nbsp;&nbsp;&nbsp;&nbsp;".join(var_strings), unsafe_allow_html=True)
+        else:
+            st.info("No local variables in the current frame at this step.")
+
+
+st.divider()
+
+# ============================================================
+# SECTION 3: CALL STACK | HEAP / OBJECTS — TWO COLUMNS
+# ============================================================
+
+col_stack, col_heap = st.columns(2)
+
+with col_stack:
+    with st.container(border=True):
+        st.subheader("📚 CALL STACK")
+
+        if current_step is None:
+            st.caption("Call stack frames will be displayed when execution begins.")
+        else:
+            stack_frames = current_step.stack_snapshot
+
+            if stack_frames:
+                for frame_info in stack_frames:
+                    frame_name = frame_info.get("name", "Unknown Frame")
+                    display_name = "<module> (Global Frame)" if frame_name in ("Global Frame", "<module>") else frame_name
+                    frame_vars = frame_info.get("variables", {})
+
+                    with st.container(border=True):
+                        is_global = frame_name in ("Global Frame", "<module>")
+                        frame_badge = "🌐 " + display_name if is_global else f"⚡ Frame: {display_name}"
+                        st.markdown(f"**{frame_badge}**")
+
+                        if frame_vars:
+                            for var_name, var_value in frame_vars.items():
+                                if isinstance(var_value, str) and var_value.startswith("Object #"):
+                                    ref_html = render_ref_badge(var_value, current_step.objects_snapshot)
+                                    st.markdown(
+                                        f"&nbsp;&nbsp;&nbsp;&nbsp;`{var_name}` → {ref_html}",
+                                        unsafe_allow_html=True
+                                    )
+                                else:
+                                    st.markdown(
+                                        f"&nbsp;&nbsp;&nbsp;&nbsp;`{var_name}` → `{repr(var_value) if isinstance(var_value, str) else var_value}`"
+                                    )
+                        else:
+                            st.caption("&nbsp;&nbsp;&nbsp;&nbsp;(no variables in this frame)")
+            else:
+                st.caption("Call stack is empty.")
+
+
+with col_heap:
+    with st.container(border=True):
+        st.subheader("🧠 HEAP / OBJECTS")
+        st.caption("Conceptual Python Object / Reference Model")
+
+        if current_step is None:
+            st.caption("Runtime heap objects and their attributes will appear here during execution.")
+        else:
+            heap_objects = current_step.objects_snapshot
+
+            if heap_objects:
+                for object_key, obj_data in heap_objects.items():
+                    object_id = obj_data.get("object_id", object_key)
+                    class_name = obj_data.get("class_name", "Object")
+                    attributes = obj_data.get("attributes", {})
+                    value = obj_data.get("value")
+                    elements = obj_data.get("elements")
+
+                    display_id = object_id.removeprefix("object_")
+                    header_label = f"Object #{display_id}"
+
+                    with st.container(border=True):
+                        st.markdown(
+                            f"### <span class='obj-ref-badge'>🏷️ {header_label}</span> &nbsp; <small style='color: #a6e3a1;'>(Type: {class_name})</small>",
+                            unsafe_allow_html=True
+                        )
+                        if value is not None:
+                            val_repr = repr(value) if isinstance(value, str) else value
+                            st.markdown(f"**Value:** `{val_repr}`")
+                        if elements is not None:
+                            st.markdown(f"**Elements:** `{elements}`")
+
+                        if attributes:
+                            st.markdown("**Attributes:**")
+                            for attr_name, attr_val in attributes.items():
+                                if isinstance(attr_val, str) and attr_val.startswith("Object #"):
+                                    ref_html = render_ref_badge(attr_val, heap_objects)
+                                    st.markdown(
+                                        f"&nbsp;&nbsp;&nbsp;&nbsp;`{attr_name}` → {ref_html}",
+                                        unsafe_allow_html=True
+                                    )
+                                else:
+                                    st.markdown(
+                                        f"&nbsp;&nbsp;&nbsp;&nbsp;`{attr_name}` → `{repr(attr_val) if isinstance(attr_val, str) else attr_val}`"
+                                    )
+                        elif value is None and elements is None:
+                            st.caption("&nbsp;&nbsp;&nbsp;&nbsp;No attributes assigned yet.")
+            else:
+                st.info("No objects currently allocated on the heap at this step.")
+
+
+# ============================================================
+# SECTION 4: PROGRAM OUTPUT — FULL WIDTH
+# ============================================================
+
+if st.session_state.output:
+    st.divider()
+    st.subheader("🖥️ PROGRAM OUTPUT (stdout)")
+    st.code(st.session_state.output, language="text")
